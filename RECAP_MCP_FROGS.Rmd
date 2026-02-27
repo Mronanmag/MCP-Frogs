@@ -1,0 +1,376 @@
+---
+title: "Serveur MCP pour le pipeline FROGS"
+author: "Ronan"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+---
+
+# Contexte et objectif
+
+**FROGS** (Find Rapidly OTUs with Galaxy Solution) est un pipeline d'analyse amplicon
+(métagénomique 16S/ITS/18S) composé de **28 scripts Python** qui s'exécutent séquentiellement.
+Chaque script peut durer de quelques minutes à plusieurs heures.
+
+L'objectif est de créer un **serveur MCP** (Model Context Protocol) qui permet à Claude
+d'orchestrer ce pipeline de façon conversationnelle :
+
+- Soumettre des jobs FROGS de façon **asynchrone** (non-bloquant)
+- Suivre leur progression en temps réel
+- Résoudre automatiquement les fichiers d'entrée/sortie entre les étapes
+- Persister l'état des jobs entre sessions (SQLite)
+
+---
+
+# Architecture générale
+
+```
+/home/ronan/Projet/MCP_FROGS/
+├── FROGS/                        # Pipeline existant — non modifié
+│   ├── tools/                    # 28 scripts Python (un par outil)
+│   ├── lib/                      # Bibliothèques partagées (frogsUtils.py, ...)
+│   └── libexec/                  # Binaires externes (swarm, vsearch, ...)
+├── workspaces/                   # Créé automatiquement — sorties des jobs
+│   └── <project_id>/<job_id>/    # Répertoire isolé par job
+├── .mcp.json                     # Configuration MCP pour Claude Code
+└── mcp_server/
+    ├── server.py                 # Point d'entrée FastMCP — 13 outils MCP
+    ├── job_manager.py            # Soumission subprocess + poller daemon
+    ├── pipeline.py               # Résolution automatique des inputs/outputs
+    ├── tools_registry.py         # Catalogue des 28 outils FROGS
+    ├── database.py               # Toutes les opérations SQLite
+    ├── config.py                 # Chemins et constantes
+    ├── requirements.txt          # mcp[cli], pydantic
+    └── frogs_jobs.db             # Créé au runtime
+```
+
+**Deux environnements Python séparés :**
+
+| Environnement | Rôle | Chemin |
+|---|---|---|
+| `mcp_frogs` (micromamba) | Fait tourner le serveur MCP | `/home/ronan/micromamba/envs/mcp_frogs/` |
+| `frogs` (conda/micromamba) | Fait tourner les outils FROGS | Configuré via `FROGS_PYTHON` |
+
+---
+
+# Fichiers créés
+
+## `config.py`
+
+Variables de configuration centralisées. Tous les autres modules importent depuis ici.
+
+```python
+FROGS_TOOLS_DIR  = ".../FROGS/tools"
+FROGS_LIB_DIR    = ".../FROGS/lib"
+FROGS_BIN_DIR    = ".../FROGS/libexec"
+WORKSPACE_ROOT   = ".../workspaces"
+DB_PATH          = ".../mcp_server/frogs_jobs.db"
+FROGS_PYTHON     = os.environ.get("FROGS_PYTHON", "/usr/bin/python3")
+DEFAULT_NB_CPUS  = 4
+POLL_INTERVAL_SEC = 10
+```
+
+## `database.py`
+
+Base SQLite avec WAL mode (`PRAGMA journal_mode=WAL`) pour les accès concurrents.
+
+**3 tables :**
+
+```sql
+-- Projets d'analyse
+projects (project_id PK, name, description, working_dir, created_at, metadata)
+
+-- Jobs individuels (un job = une exécution d'un outil FROGS)
+jobs (job_id PK, project_id FK, tool_name, step_name, params JSON,
+      command, status, pid, start_time, end_time, exit_code,
+      stdout_file, stderr_file, log_file, output_files JSON, working_dir, created_at)
+
+-- Suivi des étapes du pipeline par projet
+pipeline_steps (id PK, project_id FK, step_name, step_order, job_id FK,
+                status, is_optional, UNIQUE(project_id, step_name))
+```
+
+**Statuts possibles d'un job :** `running` → `completed` | `failed` | `cancelled`
+
+## `tools_registry.py`
+
+Catalogue des **28 outils FROGS** via deux dataclasses :
+
+```python
+@dataclass
+class ParamSpec:
+    python_name: str      # clé dans le dict params (snake_case)
+    cli_flag: str         # flag CLI réel (ex: '--input-fasta')
+    required: bool
+    type: str             # 'str' | 'int' | 'float' | 'bool' | 'list'
+    default: Any
+    is_input_file: bool
+    is_output_file: bool
+    output_key: str       # clé courte pour la résolution pipeline
+    help_text: str
+
+@dataclass
+class ToolSpec:
+    name: str
+    script_name: str      # ex: 'phyloseq_import_data.py' ≠ nom du tool
+    description: str
+    category: str
+    pipeline_step: str
+    is_optional: bool
+    params: list[ParamSpec]
+    has_subparser: bool   # cas spécial reads_processing
+    subparser_param: str  # 'sequencer' pour reads_processing
+```
+
+**12 étapes principales** (pipeline obligatoire) :
+
+1. `reads_processing` — Prétraitement + clustering/débruitage (Swarm/DADA2)
+2. `remove_chimera` — Suppression des chimères
+3. `cluster_filters` — Filtrage par abondance/présence/réplicats
+4. `taxonomic_affiliation` — Affiliation taxonomique (BLAST + RDP)
+5. `affiliation_postprocess` — Raffinement des affiliations
+6. `affiliation_filters` — Filtrage par identité/coverage/e-value
+7. `affiliation_report` — Rapport HTML des affiliations
+8. `tree` — Arbre phylogénétique (MAFFT + FastTree)
+9. `normalisation` — Raréfaction
+10. `phyloseq_import` — Import dans R/Phyloseq
+11. `phyloseq_composition` — Composition taxonomique
+12. `phyloseq_alpha_diversity` — Diversité alpha
+
+**16 étapes optionnelles** : `demultiplex`, `clustering`, `itsx`, `biom_to_tsv`,
+`tsv_to_biom`, `biom_to_stdBiom`, `cluster_asv_report`, `phyloseq_beta_diversity`,
+`phyloseq_clustering`, `phyloseq_structure`, `phyloseq_manova`, `deseq2_preprocess`,
+`deseq2_visualisation`, `frogsfunc_placeseqs`, `frogsfunc_functions`, `frogsfunc_pathways`
+
+**Cas spéciaux gérés :**
+
+- `reads_processing` : argument positionnel `sequencer` (illumina/longreads/454)
+  avant tous les flags → `[python, script.py, illumina, --nb-cpus, 4, ...]`
+- `phyloseq_import` : le script s'appelle `phyloseq_import_data.py`
+  (pas `phyloseq_import.py`)
+
+## `job_manager.py`
+
+### Environnement FROGS
+
+Réplique le setup PATH/PYTHONPATH que chaque script FROGS fait lui-même :
+
+```python
+env["PATH"]       = FROGS_BIN_DIR + ":" + env["PATH"]      # libexec en premier
+env["PYTHONPATH"] = FROGS_LIB_DIR + ":" + env["PYTHONPATH"]  # lib en premier
+```
+
+### `build_command(tool_spec, params, job_dir)`
+
+Construit la liste de commande CLI et résout les chemins de sortie :
+
+```python
+cmd = [FROGS_PYTHON, script_path]
+# Cas spécial reads_processing :
+if tool_spec.has_subparser:
+    cmd.append(params["sequencer"])  # ex: "illumina"
+# Puis tous les flags...
+# Chemins de sortie relatifs → absolus dans job_dir
+```
+
+### `submit_job()` — Non-bloquant
+
+```
+1. Valide les paramètres requis
+2. Crée WORKSPACE_ROOT/<project_id>/<job_id>/
+3. Construit la commande
+4. subprocess.Popen(...) → lance en arrière-plan
+5. INSERT en DB (status=running, pid)
+6. Enregistre dans le JobPoller
+7. Retourne job_id immédiatement
+```
+
+### `JobPoller` — Daemon thread
+
+Thread daemon qui tourne en permanence, interroge les processus actifs
+toutes les 10 secondes (`POLL_INTERVAL_SEC`) et met à jour la DB quand ils terminent.
+
+## `pipeline.py`
+
+### `FLOW_RULES`
+
+34 tuples encodant le flux de données du pipeline FROGS :
+
+```python
+FLOW_RULES = [
+    ("reads_processing", "fasta", "remove_chimera",  "input_fasta"),
+    ("reads_processing", "biom",  "remove_chimera",  "input_biom"),
+    ("remove_chimera",   "fasta", "cluster_filters", "input_fasta"),
+    # ... etc.
+    ("phyloseq_import",  "rdata", "phyloseq_composition",    "phyloseq_rdata"),
+    ("phyloseq_import",  "rdata", "phyloseq_alpha_diversity", "phyloseq_rdata"),
+    # ...
+]
+```
+
+> **Note design** : implémenté comme liste de tuples (pas un dict) pour supporter
+> les relations many-to-many — un output peut alimenter plusieurs steps aval.
+
+### `resolve_inputs_for_step(project_id, step_name)`
+
+Scanne les jobs complétés du projet, fait correspondre les `output_key`
+aux `python_name` des inputs via les `FLOW_RULES`. Retourne un dict
+`{python_name: /chemin/absolu}` prêt à l'emploi.
+
+### `get_pipeline_recommendations(project_id)`
+
+Retourne un rapport Markdown pour Claude : état de chaque étape,
+prochaine étape recommandée, inputs pré-remplis, paramètres encore manquants,
+exemple de commande `submit_pipeline_step()` copy-pastable.
+
+## `server.py`
+
+**13 outils MCP** exposés via FastMCP (transport stdio) :
+
+### Gestion générique des jobs
+
+| Outil | Description |
+|---|---|
+| `submit_job(tool_name, params, project_id?)` | Soumet n'importe quel outil FROGS |
+| `get_job_status(job_id)` | Statut, elapsed_seconds, exit_code |
+| `get_job_results(job_id)` | output_files + 50 dernières lignes de log |
+| `list_jobs(project_id?)` | Liste tous les jobs |
+| `cancel_job(job_id)` | SIGTERM sur le processus |
+
+### Orchestration pipeline
+
+| Outil | Description |
+|---|---|
+| `create_project(name, description?)` | Crée projet + initialise les 28 étapes |
+| `submit_pipeline_step(project_id, step_name, params, auto_resolve_inputs=True)` | Résout les inputs automatiquement puis soumet |
+| `get_pipeline_status(project_id)` | Vue complète de toutes les étapes |
+| `get_pipeline_recommendations(project_id)` | ⭐ Outil principal de guidage |
+
+### Utilitaires
+
+| Outil | Description |
+|---|---|
+| `list_tools(category?)` | 28 outils avec descriptions |
+| `get_tool_help(tool_name)` | Paramètres détaillés |
+| `list_projects()` | Tous les projets existants |
+| `read_log(job_id, tail_lines=100)` | Log FROGS ou stderr |
+| `read_report(job_id)` | HTML stripé ou TSV (pour le LLM) |
+
+---
+
+# Configuration et lancement
+
+## Environnement conda/micromamba
+
+```bash
+# Environnement MCP (déjà créé)
+micromamba activate mcp_frogs
+pip install 'mcp[cli]'
+
+# Trouver le Python de l'env FROGS
+which python3  # depuis l'env frogs activé
+```
+
+## `.mcp.json` (racine du projet)
+
+```json
+{
+  "mcpServers": {
+    "frogs": {
+      "type": "stdio",
+      "command": "/home/ronan/micromamba/envs/mcp_frogs/bin/python",
+      "args": ["/home/ronan/Projet/MCP_FROGS/mcp_server/server.py"],
+      "env": {
+        "FROGS_PYTHON": "/home/ronan/miniconda3/envs/frogs/bin/python3",
+        "PYTHONPATH": "/home/ronan/Projet/MCP_FROGS/mcp_server"
+      }
+    }
+  }
+}
+```
+
+## Lancer le serveur
+
+```bash
+# Via Claude Code (recommandé — .mcp.json auto-détecté)
+cd ~/Projet/MCP_FROGS
+claude
+
+# Via l'inspecteur MCP (debug navigateur)
+cd ~/Projet/MCP_FROGS/mcp_server
+mcp dev server.py
+# Puis dans l'UI : changer la commande de "uv" vers python mcp_frogs
+
+# Test direct
+cd ~/Projet/MCP_FROGS/mcp_server
+PYTHONPATH=. python server.py
+```
+
+---
+
+# Séquence d'utilisation type
+
+```
+1. list_tools()
+   → Liste les 28 outils disponibles
+
+2. create_project("Etude_16S_Sol_2024")
+   → project_id: "a1b2c3d4"
+
+3. get_pipeline_recommendations("a1b2c3d4")
+   → Affiche : prochaine étape = reads_processing
+     Paramètres requis : sequencer, min_amplicon_size, max_amplicon_size,
+                         five_prim_primer, three_prim_primer, input_archive
+
+4. submit_pipeline_step("a1b2c3d4", "reads_processing", {
+     "sequencer": "illumina",
+     "process": "swarm",
+     "min_amplicon_size": 44,
+     "max_amplicon_size": 490,
+     "five_prim_primer": "GGCGVACGGGTGAGTAA",
+     "three_prim_primer": "GTGCCAGCNGCNGCGG",
+     "R1_size": 267,
+     "R2_size": 266,
+     "input_archive": "/data/reads.tar.gz"
+   })
+   → job_id: "uuid-xxx" (retourné immédiatement)
+
+5. get_job_status("uuid-xxx")
+   → status: "running", elapsed_seconds: 142
+
+6. [... attente ...]
+   get_job_status("uuid-xxx")
+   → status: "completed"
+
+7. get_pipeline_recommendations("a1b2c3d4")
+   → Prochaine étape : remove_chimera
+     inputs auto-résolus :
+       input_fasta = /workspaces/a1b2c3d4/uuid-xxx/reads_processing.fasta
+       input_biom  = /workspaces/a1b2c3d4/uuid-xxx/reads_processing_abundance.biom
+     Aucun paramètre supplémentaire requis.
+
+8. submit_pipeline_step("a1b2c3d4", "remove_chimera", {})
+   → Les inputs sont résolus automatiquement depuis l'étape précédente
+```
+
+---
+
+# Points techniques notables
+
+- **Pas de blocage** : `submit_job()` retourne un `job_id` en quelques ms,
+  le processus tourne en arrière-plan
+- **Persistance** : SQLite WAL permet de retrouver l'état des jobs après redémarrage
+  du serveur MCP
+- **Isolation** : chaque job a son propre répertoire `workspaces/<project>/<job_id>/`
+- **FLOW_RULES** : liste de tuples (et non un dict) pour gérer les relations
+  many-to-many (ex: `phyloseq_import.rdata` alimente 6 étapes différentes)
+- **Annulation** : `cancel_job()` envoie SIGTERM — FROGS nettoie ses fichiers
+  temporaires proprement à la réception de ce signal
+
+
+  claude --resume 2ce96912-6cab-4f55-b8d0-e3440dea7468
+

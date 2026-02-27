@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "frogs": {
+      "type": "stdio",
+      "command": "/home/ronan/micromamba/envs/mcp_frogs/bin/python",
+      "args": ["/home/ronan/Projet/MCP_FROGS/mcp_server/server.py"],
+      "env": {
+        "FROGS_PYTHON": "/home/ronan/micromamba/envs/mcp_frogs/bin/python3",
+        "PYTHONPATH": "/home/ronan/Projet/MCP_FROGS/mcp_server"
+      }
+    }
+  }
+}
