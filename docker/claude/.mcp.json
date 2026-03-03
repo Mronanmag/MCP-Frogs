@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "frogs": {
+      "type": "streamable-http",
+      "url": "http://mcp-server:8000/mcp"
+    }
+  }
+}
