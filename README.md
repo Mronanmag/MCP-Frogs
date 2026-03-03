@@ -13,6 +13,7 @@ Un **serveur MCP** (Model Context Protocol) qui permet à un LLM (Claude) d'orch
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Lancement du serveur](#lancement-du-serveur)
+- [Déploiement Docker (rapide)](#déploiement-docker-rapide)
 - [Outils MCP disponibles](#outils-mcp-disponibles)
 - [Utilisation type](#utilisation-type)
 - [Points techniques](#points-techniques)
@@ -188,6 +189,50 @@ Puis dans l'interface web, changer la commande de `uv` vers le Python de l'envir
 cd ~/Projet/MCP_FROGS/mcp_server
 PYTHONPATH=. python server.py
 ```
+
+---
+
+## Déploiement Docker (rapide)
+
+Le dépôt inclut une structure Docker prête à l'emploi avec deux options :
+
+1. **Mode recommandé (2 conteneurs)** :
+   - `mcp-server` : héberge MCP + env `frogs=5.1.0` via **micromamba** (avec contrainte Python 3.7 imposée par FROGS 5.1.0).
+   - `claude-code` : CLI Claude isolée, connectée au MCP via transport HTTP.
+2. **Mode fallback (1 conteneur)** : profil `fallback`, utile si votre version de Claude Code n'accepte pas le transport MCP distant.
+
+### Fichiers ajoutés
+
+- `docker/Dockerfile.mcp` : construit deux environnements micromamba (`frogs` et `mcp_frogs`).
+  - `frogs` est créé avec `python=3.7` (compatibilité stricte de `frogs=5.1.0`).
+- `docker/Dockerfile.claude` : conteneur isolé pour Claude Code.
+- `docker-compose.yml` : orchestration complète.
+- `docker/claude/.mcp.json` : config MCP côté Claude (URL interne compose).
+- `mcp_server/http_entrypoint.py` : expose le serveur en `streamable-http` sur le port `8000`.
+
+### Lancer le setup 2 conteneurs
+
+```bash
+docker compose build
+docker compose up -d mcp-server
+docker compose run --rm claude-code claude
+```
+
+> Pensez à définir `ANTHROPIC_API_KEY` dans votre shell avant de lancer `claude-code`.
+
+### Lancer le mode fallback (tout dans un seul conteneur)
+
+```bash
+docker compose --profile fallback run --rm all-in-one
+```
+
+Dans ce shell, vous pouvez démarrer MCP et Claude localement dans le même conteneur.
+
+### Notes pratiques
+
+- Le volume `./workspaces` est monté pour conserver les sorties des jobs.
+- La base SQLite `mcp_server/frogs_jobs.db` est persistée via volume.
+- Le serveur MCP est exposé sur `http://localhost:8000` (endpoint MCP: `/mcp`).
 
 ---
 
