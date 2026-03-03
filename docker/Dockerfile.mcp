@@ -1,34 +1,77 @@
-FROM mambaorg/micromamba:1.5.10
+# syntax=docker/dockerfile:1.7
+# FROGS MCP server — two isolated conda environments inside one image:
+#   frogs      : Python 3.7 + FROGS 5.1.0 (strict bioconda pin)
+#   mcp_frogs  : Python 3.11 + MCP SDK + pydantic (HTTP/SSE server runtime)
+#
+# Upgrade notes:
+#   - MCP SDK : change MCP_VERSION ARG below (check: pip index versions mcp)
+#   - FROGS   : change FROGS_VERSION ARG (check: bioconda.github.io/recipes/frogs)
+#   - micromamba base : change FROM tag (check: hub.docker.com/r/mambaorg/micromamba)
+
+FROM mambaorg/micromamba:2.0.8
 
 USER root
 WORKDIR /app
 
-# Basic utilities for debugging/logging in the container.
+# Runtime utilities.
+# tini : proper PID-1 signal forwarding for Python subprocesses.
+# procps : ps/kill — useful for debugging stuck FROGS jobs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     ca-certificates \
     curl \
     tini \
+    procps \
     && rm -rf /var/lib/apt/lists/*
+
+# ── Build-time version pins ───────────────────────────────────────────────────
+ARG FROGS_VERSION=5.1.0
+ARG MCP_VERSION=1.9.4
+ARG PYDANTIC_VERSION=2.11.4
+# ─────────────────────────────────────────────────────────────────────────────
 
 COPY --chown=$MAMBA_USER:$MAMBA_USER mcp_server/requirements.txt /tmp/requirements.txt
 
 USER $MAMBA_USER
 SHELL ["/bin/bash", "-lc"]
 
-# Env 1: frogs runtime pinned to 5.1.0.
-RUN micromamba create -y -n frogs -c bioconda -c conda-forge frogs=5.1.0 python=3.7 \
+# Env 1 — FROGS runtime (strictly pinned to bioconda release).
+# Two-pass install:
+#   Pass 1 : install the frogs package alone — this deposits
+#            frogs-conda-requirements.yaml under the share directory.
+#   Pass 2 : use parse_frogs_reqs.py to extract only the bioinformatics tool
+#            packages (emboss, flash, cutadapt, swarm, vsearch, itsx, mafft,
+#            fasttree). R/Bioconductor packages and blast are excluded due to
+#            dependency conflicts with python=3.7 + openssl=1.0.2.
+# python=3.7 is the last version supported by FROGS 5.x dependencies.
+COPY --chown=$MAMBA_USER:$MAMBA_USER docker/parse_frogs_reqs.py /tmp/parse_frogs_reqs.py
+RUN micromamba create -y -n frogs \
+        -c bioconda -c conda-forge \
+        frogs=${FROGS_VERSION} python=3.7 \
+    && FROGS_REQS=$(find /opt/conda/envs/frogs/share -name "frogs-conda-requirements.yaml" | head -1) \
+    && echo "Installing FROGS runtime deps from: ${FROGS_REQS}" \
+    && TOOLS=$(/opt/conda/envs/frogs/bin/python /tmp/parse_frogs_reqs.py "${FROGS_REQS}") \
+    && echo "Tools: ${TOOLS}" \
+    && micromamba install -y -n frogs -c bioconda -c conda-forge ${TOOLS} \
     && micromamba clean --all --yes
 
-# Env 2: MCP server runtime.
+# Env 2 — MCP server runtime.
+# Install exact SDK version so the image is reproducible and compatible
+# with the Claude Code version used in Dockerfile.claude.
 RUN micromamba create -y -n mcp_frogs -c conda-forge python=3.11 pip \
-    && micromamba run -n mcp_frogs pip install --no-cache-dir -r /tmp/requirements.txt \
+    && micromamba run -n mcp_frogs pip install --no-cache-dir \
+        "mcp[cli]==${MCP_VERSION}" \
+        "pydantic==${PYDANTIC_VERSION}" \
     && micromamba clean --all --yes
 
 COPY --chown=$MAMBA_USER:$MAMBA_USER . /app
 
 ENV PYTHONPATH=/app/mcp_server
 ENV FROGS_PYTHON=/opt/conda/envs/frogs/bin/python
+
+# Health-check endpoint — curl the MCP server's /health route.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -fs http://localhost:8000/health || exit 1
 
 EXPOSE 8000
 ENTRYPOINT ["/usr/bin/tini", "--"]
