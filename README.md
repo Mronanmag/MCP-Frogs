@@ -174,9 +174,9 @@ claude --debug
 
 Puis vérifiez, dans les logs debug :
 
-1. **Commande exécutée** (doit être `./scripts/run_mcp_server.sh`).
+1. **Commande exécutée** (doit être `./scripts/run_mcp_server.sh` en mode local, ou `http://mcp-server:8000/mcp` en mode Docker 2 conteneurs).
 2. **Erreur Python import** (`ModuleNotFoundError`) → vérifier `PYTHONPATH`.
-3. **Erreur binaire Python introuvable** (`No such file or directory`) → exporter `MCP_FROGS_PYTHON`/`FROGS_PYTHON` vers les bons chemins.
+3. **Erreur binaire Python introuvable** (`No such file or directory` ou `exec: python3: not found`) → exporter `MCP_FROGS_PYTHON`/`FROGS_PYTHON` vers les bons chemins.
 4. **Crash serveur au démarrage** → tester manuellement :
 
 ```bash
@@ -247,6 +247,8 @@ docker compose run --rm claude-code claude
 ```
 
 > Pensez à définir `ANTHROPIC_API_KEY` dans votre shell avant de lancer `claude-code`.
+>
+> Le service `claude-code` monte `docker/claude/.mcp.json` **sur le `.mcp.json` du projet** dans le conteneur, pour forcer la connexion HTTP vers `mcp-server` (et éviter le mode stdio local).
 
 ### Lancer le mode fallback (tout dans un seul conteneur)
 

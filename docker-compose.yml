@@ -25,7 +25,7 @@ services:
     working_dir: /workspace/MCP-Frogs
     volumes:
       - ./:/workspace/MCP-Frogs
-      - ./docker/claude/.mcp.json:/root/.mcp.json:ro
+      - ./docker/claude/.mcp.json:/workspace/MCP-Frogs/.mcp.json:ro
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     stdin_open: true
