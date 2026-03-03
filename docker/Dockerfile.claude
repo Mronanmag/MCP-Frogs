@@ -1,0 +1,15 @@
+FROM node:20-bookworm-slim
+
+WORKDIR /workspace
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Claude Code CLI (requires ANTHROPIC_API_KEY at runtime).
+RUN npm install -g @anthropic-ai/claude-code
+
+CMD ["bash"]
