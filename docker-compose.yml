@@ -1,44 +1,86 @@
 services:
+  # ─── MCP Server (FROGS backend) ────────────────────────────────────────────
   mcp-server:
     build:
       context: .
       dockerfile: docker/Dockerfile.mcp
+      # Pass version ARGs to keep the image reproducible.
+      # Override on the CLI:  docker compose build --build-arg MCP_VERSION=1.9.4
+      args:
+        FROGS_VERSION: "5.1.0"
+        MCP_VERSION: "1.9.4"
+        PYDANTIC_VERSION: "2.11.4"
     container_name: mcp-frogs-server
+    restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
-      - FROGS_PYTHON=/opt/conda/envs/frogs/bin/python
-      - PYTHONPATH=/app/mcp_server
-      - MCP_HOST=0.0.0.0
-      - MCP_PORT=8000
-      - MCP_DISABLE_DNS_REBINDING_PROTECTION=1
+      FROGS_PYTHON: /opt/conda/envs/frogs/bin/python
+      FROGS_DIR: /opt/conda/envs/frogs/share/FROGS-5.1.0
+      FROGS_TOOLS_DIR: /opt/conda/envs/frogs/share/FROGS-5.1.0/tools
+      FROGS_LIB_DIR: /opt/conda/envs/frogs/share/FROGS-5.1.0/lib
+      FROGS_BIN_DIR: /opt/conda/envs/frogs/share/FROGS-5.1.0/libexec
+      PYTHONPATH: /app/mcp_server
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8000"
+      # Disable strict host-header checks so "mcp-server" service name is accepted.
+      MCP_DISABLE_DNS_REBINDING_PROTECTION: "1"
     volumes:
       - ./workspaces:/app/workspaces
-      - ./mcp_server/frogs_jobs.db:/app/mcp_server/frogs_jobs.db
+      # Persist the SQLite job database across container restarts.
+      - mcp-db:/app/mcp_server
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+  # ─── Claude Code CLI ────────────────────────────────────────────────────────
   claude-code:
     build:
       context: .
       dockerfile: docker/Dockerfile.claude
+      args:
+        # Pin Claude Code to the same version as in Dockerfile.claude ARG default.
+        CLAUDE_CODE_VERSION: "2.1.63"
     container_name: claude-code
+    restart: unless-stopped
     depends_on:
-      - mcp-server
+      mcp-server:
+        condition: service_healthy
     working_dir: /workspace/MCP-Frogs
     volumes:
       - ./:/workspace/MCP-Frogs
+      # Override .mcp.json with the Docker-internal URL (Streamable HTTP).
       - ./docker/claude/.mcp.json:/workspace/MCP-Frogs/.mcp.json:ro
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     stdin_open: true
     tty: true
 
-  # Option B: all-in-one container if your Claude Code setup cannot consume
-  # remote MCP transport in your current version.
+  # ─── All-in-one fallback ────────────────────────────────────────────────────
+  # Use when your Claude Code setup cannot consume a remote MCP transport:
+  #   docker compose --profile fallback up all-in-one
   all-in-one:
     build:
       context: .
       dockerfile: docker/Dockerfile.mcp
     profiles: ["fallback"]
+    container_name: mcp-frogs-all-in-one
     working_dir: /app
     volumes:
       - ./:/app
-    command: ["bash", "-lc", "echo 'Use this profile to run MCP + Claude in one container.' && bash"]
+    command:
+      - bash
+      - -lc
+      - |
+        echo "[all-in-one] Starting MCP server in background..."
+        micromamba run -n mcp_frogs python /app/mcp_server/http_entrypoint.py &
+        echo "[all-in-one] MCP server started. Dropping into bash."
+        bash
+
+# ─── Named volumes ─────────────────────────────────────────────────────────
+volumes:
+  # Persist mcp_server/ directory (includes frogs_jobs.db) across rebuilds.
+  mcp-db:
