@@ -9,6 +9,9 @@ services:
     environment:
       - FROGS_PYTHON=/opt/conda/envs/frogs/bin/python
       - PYTHONPATH=/app/mcp_server
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+      - MCP_DISABLE_DNS_REBINDING_PROTECTION=1
     volumes:
       - ./workspaces:/app/workspaces
       - ./mcp_server/frogs_jobs.db:/app/mcp_server/frogs_jobs.db

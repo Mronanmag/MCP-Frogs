@@ -126,30 +126,31 @@ micromamba deactivate
 
 ### `.mcp.json` (à la racine du projet)
 
-Ce fichier indique à Claude Code comment démarrer le serveur MCP. Adaptez les chemins à votre machine :
+Le dépôt fournit maintenant une configuration **portable** qui évite les chemins absolus (`/home/...`) et lance un wrapper shell (`scripts/run_mcp_server.sh`).
 
 ```json
 {
   "mcpServers": {
     "frogs": {
       "type": "stdio",
-      "command": "/home/ronan/micromamba/envs/mcp_frogs/bin/python",
-      "args": ["/home/ronan/Projet/MCP_FROGS/mcp_server/server.py"],
+      "command": "bash",
+      "args": ["-lc", "./scripts/run_mcp_server.sh"],
       "env": {
-        "FROGS_PYTHON": "/home/ronan/miniconda3/envs/frogs/bin/python3",
-        "PYTHONPATH": "/home/ronan/Projet/MCP_FROGS/mcp_server"
+        "MCP_FROGS_PYTHON": "python3",
+        "FROGS_PYTHON": "python3"
       }
     }
   }
 }
 ```
 
-| Variable | Description |
-|---|---|
-| `command` | Python de l'environnement `mcp_frogs` |
-| `args[0]` | Chemin absolu vers `server.py` |
-| `FROGS_PYTHON` | Python de l'environnement `frogs` (utilisé pour lancer les scripts FROGS) |
-| `PYTHONPATH` | Dossier `mcp_server` (pour les imports Python internes) |
+Vous pouvez surcharger les binaires Python sans modifier le JSON :
+
+```bash
+export MCP_FROGS_PYTHON=/chemin/vers/python_mcp
+export FROGS_PYTHON=/chemin/vers/python_frogs
+claude
+```
 
 ### `mcp_server/config.py`
 
@@ -160,6 +161,33 @@ FROGS_TOOLS_DIR  = "/chemin/vers/FROGS/tools"
 FROGS_LIB_DIR    = "/chemin/vers/FROGS/lib"
 FROGS_BIN_DIR    = "/chemin/vers/FROGS/libexec"
 ```
+
+---
+
+### Résoudre `Failed to reconnect to frogs`
+
+Si Claude affiche `frogs: ✗ failed`, lancez :
+
+```bash
+claude --debug
+```
+
+Puis vérifiez, dans les logs debug :
+
+1. **Commande exécutée** (doit être `./scripts/run_mcp_server.sh`).
+2. **Erreur Python import** (`ModuleNotFoundError`) → vérifier `PYTHONPATH`.
+3. **Erreur binaire Python introuvable** (`No such file or directory`) → exporter `MCP_FROGS_PYTHON`/`FROGS_PYTHON` vers les bons chemins.
+4. **Crash serveur au démarrage** → tester manuellement :
+
+```bash
+./scripts/run_mcp_server.sh
+```
+
+Si ce test échoue, le message terminal est la cause racine à corriger.
+
+5. **Erreur `TypeError: FastMCP.run() got an unexpected keyword argument "host"`**
+   - Cause : incompatibilité de version `mcp` (la méthode `run()` n'accepte pas `host/port` en argument).
+   - Correctif appliqué : `mcp_server/http_entrypoint.py` configure `mcp.settings.host` / `mcp.settings.port` puis appelle `mcp.run(transport="streamable-http")`.
 
 ---
 
@@ -233,6 +261,7 @@ Dans ce shell, vous pouvez démarrer MCP et Claude localement dans le même cont
 - Le volume `./workspaces` est monté pour conserver les sorties des jobs.
 - La base SQLite `mcp_server/frogs_jobs.db` est persistée via volume.
 - Le serveur MCP est exposé sur `http://localhost:8000` (endpoint MCP: `/mcp`).
+- Variables de contrôle HTTP: `MCP_HOST`, `MCP_PORT`, `MCP_DISABLE_DNS_REBINDING_PROTECTION`.
 
 ---
 
