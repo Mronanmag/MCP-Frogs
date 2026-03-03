@@ -173,7 +173,7 @@ claude --debug
 
 Puis vérifiez, dans les logs debug :
 
-1. **Commande exécutée** (doit être `./scripts/run_mcp_server.sh` en mode local, ou `http://mcp-server:8000/mcp` en mode Docker 2 conteneurs).
+1. **Commande exécutée** (doit être `./scripts/run_mcp_server.sh` en mode local, ou `http://mcp-server:8000/sse` en mode Docker 2 conteneurs).
 2. **Erreur Python import** (`ModuleNotFoundError`) → vérifier `PYTHONPATH`.
 3. **Erreur binaire Python introuvable** (`No such file or directory` ou `exec: python3: not found`) → exporter `MCP_FROGS_PYTHON`/`FROGS_PYTHON` vers les bons chemins.
 4. **Crash serveur au démarrage** → tester manuellement :
@@ -186,7 +186,7 @@ Si ce test échoue, le message terminal est la cause racine à corriger.
 
 5. **Erreur `TypeError: FastMCP.run() got an unexpected keyword argument "host"`**
    - Cause : incompatibilité de version `mcp` (la méthode `run()` n'accepte pas `host/port` en argument).
-   - Correctif appliqué : `mcp_server/http_entrypoint.py` configure `mcp.settings.host` / `mcp.settings.port` puis appelle `mcp.run(transport="streamable-http")`.
+   - Correctif appliqué : `mcp_server/http_entrypoint.py` configure `mcp.settings.host` / `mcp.settings.port` puis appelle `mcp.run(transport="sse")`.
 
 ---
 
@@ -235,7 +235,7 @@ Le dépôt inclut une structure Docker prête à l'emploi avec deux options :
 - `docker/Dockerfile.claude` : conteneur isolé pour Claude Code.
 - `docker-compose.yml` : orchestration complète.
 - `docker/claude/.mcp.json` : config MCP côté Claude (URL interne compose).
-- `mcp_server/http_entrypoint.py` : expose le serveur en `streamable-http` sur le port `8000`.
+- `mcp_server/http_entrypoint.py` : expose le serveur en `sse` sur le port `8000`.
 
 ### Lancer le setup 2 conteneurs
 
@@ -261,7 +261,7 @@ Dans ce shell, vous pouvez démarrer MCP et Claude localement dans le même cont
 
 - Le volume `./workspaces` est monté pour conserver les sorties des jobs.
 - La base SQLite `mcp_server/frogs_jobs.db` est persistée via volume.
-- Le serveur MCP est exposé sur `http://localhost:8000` (endpoint MCP: `/mcp`).
+- Le serveur MCP est exposé sur `http://localhost:8000` (endpoint MCP: `/sse`).
 - Variables de contrôle HTTP: `MCP_HOST`, `MCP_PORT`, `MCP_DISABLE_DNS_REBINDING_PROTECTION`.
 
 ---

@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "frogs": {
-      "url": "http://mcp-server:8000/mcp"
+      "url": "http://mcp-server:8000/sse"
     }
   }
 }

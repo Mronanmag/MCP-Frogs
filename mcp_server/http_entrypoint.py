@@ -1,9 +1,7 @@
 """HTTP launcher for the MCP-Frogs server.
 
-Compatibility note:
-- Older/newer `mcp` versions expose different FastMCP.run signatures.
-- We therefore configure host/port through `mcp.settings` and call
-  `mcp.run(transport="streamable-http")` only.
+This entrypoint exposes FastMCP with the legacy SSE transport (`/sse` +
+`/messages`) for compatibility with Claude Code 2.1.x.
 """
 
 import os
@@ -24,4 +22,5 @@ if __name__ == "__main__":
     if _as_bool(os.getenv("MCP_DISABLE_DNS_REBINDING_PROTECTION", "1")):
         mcp.settings.transport_security.enable_dns_rebinding_protection = False
 
-    mcp.run(transport="streamable-http")
+    # Claude Code 2.1.x expects SSE endpoints, not streamable-http sessions.
+    mcp.run(transport="sse")

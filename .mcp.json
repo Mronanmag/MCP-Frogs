@@ -1,15 +1,7 @@
 {
   "mcpServers": {
     "frogs": {
-      "command": "bash",
-      "args": [
-        "-lc",
-        "./scripts/run_mcp_server.sh"
-      ],
-      "env": {
-        "MCP_FROGS_PYTHON": "python3",
-        "FROGS_PYTHON": "python3"
-      }
+      "url": "http://mcp-server:8000/sse"
     }
   }
 }
