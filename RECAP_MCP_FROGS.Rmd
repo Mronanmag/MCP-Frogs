@@ -371,6 +371,3 @@ PYTHONPATH=. python server.py
 - **Annulation** : `cancel_job()` envoie SIGTERM — FROGS nettoie ses fichiers
   temporaires proprement à la réception de ce signal
 
-
-  claude --resume 2ce96912-6cab-4f55-b8d0-e3440dea7468
-

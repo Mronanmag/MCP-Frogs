@@ -45,9 +45,8 @@ class ToolSpec:
 
     @property
     def script_path(self) -> str:
-        tool_dir = self.name if self.name != "phyloseq_import" else "phyloseq_import"
         # handle tools where script name differs from directory
-        return os.path.join(FROGS_TOOLS_DIR, tool_dir, self.script_name)
+        return os.path.join(FROGS_TOOLS_DIR, self.name, self.script_name)
 
 
 # ---------------------------------------------------------------------------
