@@ -1,0 +1,41 @@
+services:
+  mcp-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mcp
+    container_name: mcp-frogs-server
+    ports:
+      - "8000:8000"
+    environment:
+      - FROGS_PYTHON=/opt/conda/envs/frogs/bin/python
+      - PYTHONPATH=/app/mcp_server
+    volumes:
+      - ./workspaces:/app/workspaces
+      - ./mcp_server/frogs_jobs.db:/app/mcp_server/frogs_jobs.db
+  claude-code:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.claude
+    container_name: claude-code
+    depends_on:
+      - mcp-server
+    working_dir: /workspace/MCP-Frogs
+    volumes:
+      - ./:/workspace/MCP-Frogs
+      - ./docker/claude/.mcp.json:/root/.mcp.json:ro
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    stdin_open: true
+    tty: true
+
+  # Option B: all-in-one container if your Claude Code setup cannot consume
+  # remote MCP transport in your current version.
+  all-in-one:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mcp
+    profiles: ["fallback"]
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: ["bash", "-lc", "echo 'Use this profile to run MCP + Claude in one container.' && bash"]

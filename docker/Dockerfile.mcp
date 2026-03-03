@@ -1,0 +1,35 @@
+FROM mambaorg/micromamba:1.5.10
+
+USER root
+WORKDIR /app
+
+# Basic utilities for debugging/logging in the container.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    tini \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --chown=$MAMBA_USER:$MAMBA_USER mcp_server/requirements.txt /tmp/requirements.txt
+
+USER $MAMBA_USER
+SHELL ["/bin/bash", "-lc"]
+
+# Env 1: frogs runtime pinned to 5.1.0.
+RUN micromamba create -y -n frogs -c bioconda -c conda-forge frogs=5.1.0 python=3.10 \
+    && micromamba clean --all --yes
+
+# Env 2: MCP server runtime.
+RUN micromamba create -y -n mcp_frogs -c conda-forge python=3.11 pip \
+    && micromamba run -n mcp_frogs pip install --no-cache-dir -r /tmp/requirements.txt \
+    && micromamba clean --all --yes
+
+COPY --chown=$MAMBA_USER:$MAMBA_USER . /app
+
+ENV PYTHONPATH=/app/mcp_server
+ENV FROGS_PYTHON=/opt/conda/envs/frogs/bin/python
+
+EXPOSE 8000
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["micromamba", "run", "-n", "mcp_frogs", "python", "/app/mcp_server/http_entrypoint.py"]
