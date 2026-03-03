@@ -13,6 +13,7 @@ Un **serveur MCP** (Model Context Protocol) qui permet à un LLM (Claude) d'orch
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Lancement du serveur](#lancement-du-serveur)
+- [Déploiement Docker (rapide)](#déploiement-docker-rapide)
 - [Outils MCP disponibles](#outils-mcp-disponibles)
 - [Utilisation type](#utilisation-type)
 - [Points techniques](#points-techniques)
@@ -125,30 +126,30 @@ micromamba deactivate
 
 ### `.mcp.json` (à la racine du projet)
 
-Ce fichier indique à Claude Code comment démarrer le serveur MCP. Adaptez les chemins à votre machine :
+Le dépôt fournit maintenant une configuration **portable** qui évite les chemins absolus (`/home/...`) et lance un wrapper shell (`scripts/run_mcp_server.sh`).
 
 ```json
 {
   "mcpServers": {
     "frogs": {
-      "type": "stdio",
-      "command": "/home/ronan/micromamba/envs/mcp_frogs/bin/python",
-      "args": ["/home/ronan/Projet/MCP_FROGS/mcp_server/server.py"],
+      "command": "bash",
+      "args": ["-lc", "./scripts/run_mcp_server.sh"],
       "env": {
-        "FROGS_PYTHON": "/home/ronan/miniconda3/envs/frogs/bin/python3",
-        "PYTHONPATH": "/home/ronan/Projet/MCP_FROGS/mcp_server"
+        "MCP_FROGS_PYTHON": "python3",
+        "FROGS_PYTHON": "python3"
       }
     }
   }
 }
 ```
 
-| Variable | Description |
-|---|---|
-| `command` | Python de l'environnement `mcp_frogs` |
-| `args[0]` | Chemin absolu vers `server.py` |
-| `FROGS_PYTHON` | Python de l'environnement `frogs` (utilisé pour lancer les scripts FROGS) |
-| `PYTHONPATH` | Dossier `mcp_server` (pour les imports Python internes) |
+Vous pouvez surcharger les binaires Python sans modifier le JSON :
+
+```bash
+export MCP_FROGS_PYTHON=/chemin/vers/python_mcp
+export FROGS_PYTHON=/chemin/vers/python_frogs
+claude
+```
 
 ### `mcp_server/config.py`
 
@@ -159,6 +160,33 @@ FROGS_TOOLS_DIR  = "/chemin/vers/FROGS/tools"
 FROGS_LIB_DIR    = "/chemin/vers/FROGS/lib"
 FROGS_BIN_DIR    = "/chemin/vers/FROGS/libexec"
 ```
+
+---
+
+### Résoudre `Failed to reconnect to frogs`
+
+Si Claude affiche `frogs: ✗ failed`, lancez :
+
+```bash
+claude --debug
+```
+
+Puis vérifiez, dans les logs debug :
+
+1. **Commande exécutée** (doit être `./scripts/run_mcp_server.sh` en mode local, ou `http://mcp-server:8000/mcp` en mode Docker 2 conteneurs).
+2. **Erreur Python import** (`ModuleNotFoundError`) → vérifier `PYTHONPATH`.
+3. **Erreur binaire Python introuvable** (`No such file or directory` ou `exec: python3: not found`) → exporter `MCP_FROGS_PYTHON`/`FROGS_PYTHON` vers les bons chemins.
+4. **Crash serveur au démarrage** → tester manuellement :
+
+```bash
+./scripts/run_mcp_server.sh
+```
+
+Si ce test échoue, le message terminal est la cause racine à corriger.
+
+5. **Erreur `TypeError: FastMCP.run() got an unexpected keyword argument "host"`**
+   - Cause : incompatibilité de version `mcp` (la méthode `run()` n'accepte pas `host/port` en argument).
+   - Correctif appliqué : `mcp_server/http_entrypoint.py` configure `mcp.settings.host` / `mcp.settings.port` puis appelle `mcp.run(transport="streamable-http")`.
 
 ---
 
@@ -188,6 +216,53 @@ Puis dans l'interface web, changer la commande de `uv` vers le Python de l'envir
 cd ~/Projet/MCP_FROGS/mcp_server
 PYTHONPATH=. python server.py
 ```
+
+---
+
+## Déploiement Docker (rapide)
+
+Le dépôt inclut une structure Docker prête à l'emploi avec deux options :
+
+1. **Mode recommandé (2 conteneurs)** :
+   - `mcp-server` : héberge MCP + env `frogs=5.1.0` via **micromamba** (avec contrainte Python 3.7 imposée par FROGS 5.1.0).
+   - `claude-code` : CLI Claude isolée, connectée au MCP via transport HTTP.
+2. **Mode fallback (1 conteneur)** : profil `fallback`, utile si votre version de Claude Code n'accepte pas le transport MCP distant.
+
+### Fichiers ajoutés
+
+- `docker/Dockerfile.mcp` : construit deux environnements micromamba (`frogs` et `mcp_frogs`).
+  - `frogs` est créé avec `python=3.7` (compatibilité stricte de `frogs=5.1.0`).
+- `docker/Dockerfile.claude` : conteneur isolé pour Claude Code.
+- `docker-compose.yml` : orchestration complète.
+- `docker/claude/.mcp.json` : config MCP côté Claude (URL interne compose).
+- `mcp_server/http_entrypoint.py` : expose le serveur en `streamable-http` sur le port `8000`.
+
+### Lancer le setup 2 conteneurs
+
+```bash
+docker compose build
+docker compose up -d mcp-server
+docker compose run --rm claude-code claude
+```
+
+> Pensez à définir `ANTHROPIC_API_KEY` dans votre shell avant de lancer `claude-code`.
+>
+> Le service `claude-code` monte `docker/claude/.mcp.json` **sur le `.mcp.json` du projet** dans le conteneur, pour forcer la connexion HTTP vers `mcp-server` (et éviter le mode stdio local).
+
+### Lancer le mode fallback (tout dans un seul conteneur)
+
+```bash
+docker compose --profile fallback run --rm all-in-one
+```
+
+Dans ce shell, vous pouvez démarrer MCP et Claude localement dans le même conteneur.
+
+### Notes pratiques
+
+- Le volume `./workspaces` est monté pour conserver les sorties des jobs.
+- La base SQLite `mcp_server/frogs_jobs.db` est persistée via volume.
+- Le serveur MCP est exposé sur `http://localhost:8000` (endpoint MCP: `/mcp`).
+- Variables de contrôle HTTP: `MCP_HOST`, `MCP_PORT`, `MCP_DISABLE_DNS_REBINDING_PROTECTION`.
 
 ---
 
