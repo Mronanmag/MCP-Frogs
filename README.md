@@ -197,13 +197,14 @@ PYTHONPATH=. python server.py
 Le dépôt inclut une structure Docker prête à l'emploi avec deux options :
 
 1. **Mode recommandé (2 conteneurs)** :
-   - `mcp-server` : héberge MCP + env `frogs=5.1.0` via **micromamba**.
+   - `mcp-server` : héberge MCP + env `frogs=5.1.0` via **micromamba** (avec contrainte Python 3.7 imposée par FROGS 5.1.0).
    - `claude-code` : CLI Claude isolée, connectée au MCP via transport HTTP.
 2. **Mode fallback (1 conteneur)** : profil `fallback`, utile si votre version de Claude Code n'accepte pas le transport MCP distant.
 
 ### Fichiers ajoutés
 
 - `docker/Dockerfile.mcp` : construit deux environnements micromamba (`frogs` et `mcp_frogs`).
+  - `frogs` est créé avec `python=3.7` (compatibilité stricte de `frogs=5.1.0`).
 - `docker/Dockerfile.claude` : conteneur isolé pour Claude Code.
 - `docker-compose.yml` : orchestration complète.
 - `docker/claude/.mcp.json` : config MCP côté Claude (URL interne compose).
