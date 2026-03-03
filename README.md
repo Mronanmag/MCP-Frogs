@@ -132,7 +132,6 @@ Le dépôt fournit maintenant une configuration **portable** qui évite les chem
 {
   "mcpServers": {
     "frogs": {
-      "type": "stdio",
       "command": "bash",
       "args": ["-lc", "./scripts/run_mcp_server.sh"],
       "env": {

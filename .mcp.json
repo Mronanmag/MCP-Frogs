@@ -1,9 +1,11 @@
 {
   "mcpServers": {
     "frogs": {
-      "type": "stdio",
       "command": "bash",
-      "args": ["-lc", "./scripts/run_mcp_server.sh"],
+      "args": [
+        "-lc",
+        "./scripts/run_mcp_server.sh"
+      ],
       "env": {
         "MCP_FROGS_PYTHON": "python3",
         "FROGS_PYTHON": "python3"
