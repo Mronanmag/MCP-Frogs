@@ -4,7 +4,7 @@ All state is persisted here, enabling job tracking across sessions.
 """
 import sqlite3
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from config import DB_PATH
@@ -76,10 +76,10 @@ def init_db() -> None:
 # ---------------------------------------------------------------------------
 
 def create_project(project_id: str, name: str, description: str = "",
-                   working_dir: str = "", metadata: dict = None) -> dict:
+                   working_dir: str = "", metadata: Optional[dict] = None) -> Optional[dict]:
     conn = _connect()
     try:
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(tz=timezone.utc).isoformat()
         conn.execute(
             """INSERT INTO projects (project_id, name, description, working_dir, created_at, metadata)
                VALUES (?, ?, ?, ?, ?, ?)""",
@@ -124,10 +124,10 @@ def insert_job(job_id: str, project_id: Optional[str], tool_name: str,
                step_name: Optional[str], params: dict, command: list,
                working_dir: str, pid: Optional[int] = None,
                stdout_file: str = "", stderr_file: str = "",
-               log_file: str = "") -> dict:
+               log_file: str = "") -> Optional[dict]:
     conn = _connect()
     try:
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(tz=timezone.utc).isoformat()
         conn.execute(
             """INSERT INTO jobs (job_id, project_id, tool_name, step_name, params,
                                  command, status, pid, start_time, stdout_file,
@@ -146,7 +146,7 @@ def insert_job(job_id: str, project_id: Optional[str], tool_name: str,
 def update_job_status(job_id: str, status: str, exit_code: Optional[int] = None) -> None:
     conn = _connect()
     try:
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(tz=timezone.utc).isoformat()
         conn.execute(
             """UPDATE jobs SET status = ?, exit_code = ?, end_time = ?
                WHERE job_id = ?""",

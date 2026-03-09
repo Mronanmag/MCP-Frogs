@@ -1,2 +1,20 @@
-mcp[cli]>=1.0.0
-pydantic>=2.0.0
+# MCP server runtime dependencies.
+#
+# These versions are installed into the `mcp_frogs` conda environment.
+# The exact versions are also pinned in Dockerfile.mcp via ARG (for
+# reproducible Docker builds).  Keep both files in sync when upgrading.
+#
+# Upgrade guide:
+#   1. Bump MCP_VERSION in Dockerfile.mcp (and the version below).
+#   2. Bump PYDANTIC_VERSION in Dockerfile.mcp (and pydantic below).
+#   3. Rebuild:  docker compose build --no-cache mcp-server
+#
+# MCP SDK changelog: https://github.com/modelcontextprotocol/python-sdk/releases
+# Pydantic changelog: https://docs.pydantic.dev/latest/changelog/
+
+# MCP Python SDK — includes FastMCP, uvicorn, starlette, httpx, anyio.
+# ≥ 1.9.0 required for Streamable HTTP transport (Claude Code ≥ 2.1).
+mcp[cli]==1.9.4
+
+# Data validation — pin minor to avoid silent behaviour changes.
+pydantic==2.11.4

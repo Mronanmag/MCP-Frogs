@@ -5,7 +5,18 @@ Asynchronous job submission and monitoring for FROGS tools.
 - JobPoller: daemon thread that polls running processes and updates DB
 - cancel_job(): sends SIGTERM
 - build_command(): constructs the CLI command list from ToolSpec + params
+
+Bug fixes applied:
+- PATH/env propagation: FROGS_ENV is also applied to os.environ so that
+  child processes spawned by FROGS's own multiprocessing workers inherit the
+  correct PATH (fixes vsearch: command not found, exit 127).
+- os.path.isfile -> os.path.exists in output scanning so that output
+  directories (e.g. matrix_outdir for phyloseq_beta_diversity) are kept.
+- Race condition in cancel_job(): the job is now removed from _active
+  before the DB status update so the poller cannot overwrite 'cancelled'.
+- Replaced print() with proper logging module calls.
 """
+import logging
 import os
 import signal
 import subprocess
@@ -25,6 +36,8 @@ from database import (
 )
 from tools_registry import TOOLS, ToolSpec, ParamSpec
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Environment setup
@@ -33,14 +46,21 @@ from tools_registry import TOOLS, ToolSpec, ParamSpec
 def _build_frogs_env() -> dict:
     """
     Build the environment for FROGS subprocesses.
+
     Replicates the PATH/PYTHONPATH setup each FROGS script does itself
     (prepending libexec to PATH and lib to PYTHONPATH).
+
+    The resulting env dict is passed explicitly to every Popen call AND
+    applied to os.environ so that processes spawned by FROGS's own
+    multiprocessing workers (which inherit os.environ, not the Popen env)
+    also find the FROGS binaries.
     """
     env = os.environ.copy()
 
     # Prepend FROGS libexec to PATH
     existing_path = env.get("PATH", "")
-    env["PATH"] = FROGS_BIN_DIR + os.pathsep + existing_path
+    frogs_path = FROGS_BIN_DIR + os.pathsep + existing_path
+    env["PATH"] = frogs_path
 
     # Prepend FROGS lib to PYTHONPATH
     existing_pypath = env.get("PYTHONPATH", "")
@@ -48,6 +68,13 @@ def _build_frogs_env() -> dict:
         env["PYTHONPATH"] = FROGS_LIB_DIR + os.pathsep + existing_pypath
     else:
         env["PYTHONPATH"] = FROGS_LIB_DIR
+
+    # Apply to os.environ so multiprocessing child workers inherit the PATH.
+    # This is necessary because FROGS scripts spawn their own subprocesses
+    # via multiprocessing.Process which uses os.fork() / os.execve() and
+    # inherits os.environ rather than the explicit env= dict passed to Popen.
+    os.environ["PATH"] = frogs_path
+    os.environ["PYTHONPATH"] = env["PYTHONPATH"]
 
     return env
 
@@ -159,6 +186,11 @@ class JobPoller:
         with self._lock:
             self._active[job_id] = (proc, project_id, step_name)
 
+    def remove(self, job_id: str) -> None:
+        """Remove a job from the active poll set (thread-safe)."""
+        with self._lock:
+            self._active.pop(job_id, None)
+
     def _poll_loop(self) -> None:
         while True:
             time.sleep(POLL_INTERVAL_SEC)
@@ -176,12 +208,14 @@ class JobPoller:
                     status = "completed" if rc == 0 else "failed"
                     update_job_status(job_id, status, exit_code=rc)
 
-                    # Scan output files and record which actually exist
+                    # Scan output files and record which actually exist.
+                    # Use os.path.exists (not isfile) to keep output directories
+                    # (e.g. matrix_outdir for phyloseq_beta_diversity).
                     job = get_job(job_id)
                     if job and job.get("output_files"):
                         existing = {
                             k: v for k, v in job["output_files"].items()
-                            if isinstance(v, str) and os.path.isfile(v)
+                            if isinstance(v, str) and os.path.exists(v)
                         }
                         if existing != job["output_files"]:
                             update_job_output_files(job_id, existing)
@@ -189,7 +223,7 @@ class JobPoller:
                     if project_id and step_name:
                         update_pipeline_step(project_id, step_name, status, job_id)
                 except Exception as exc:
-                    print(f"[JobPoller] Error updating job {job_id}: {exc}", flush=True)
+                    logger.error("Error updating job %s: %s", job_id, exc)
 
 
 # Singleton poller started at import time
@@ -246,7 +280,7 @@ def submit_job(tool_name: str, params: dict,
     # Find log file from resolved outputs (or default)
     log_file = resolved_outputs.get("log", os.path.join(job_dir, "frogs.log"))
 
-    # Launch subprocess
+    # Launch subprocess with the full FROGS environment
     with open(stdout_file, "w") as fout, open(stderr_file, "w") as ferr:
         proc = subprocess.Popen(
             cmd,
@@ -285,6 +319,10 @@ def cancel_job(job_id: str) -> bool:
     """
     Send SIGTERM to the job's process.
 
+    The job is removed from the poller's active set BEFORE the DB update
+    to prevent the poll loop from overwriting 'cancelled' with 'failed'
+    (race condition fix).
+
     Returns True if the signal was sent, False if the process was not found.
     """
     job = get_job(job_id)
@@ -295,11 +333,17 @@ def cancel_job(job_id: str) -> bool:
     if not pid:
         return False
 
+    # Remove from active poll set first to prevent the poller from
+    # overwriting the 'cancelled' status with 'failed' after SIGTERM.
+    _poller.remove(job_id)
+
     try:
         os.kill(pid, signal.SIGTERM)
         update_job_status(job_id, "cancelled", exit_code=-15)
         return True
     except ProcessLookupError:
+        # Process already finished — still mark as cancelled in DB
+        update_job_status(job_id, "cancelled", exit_code=-15)
         return False
     except PermissionError as exc:
         raise PermissionError(f"Cannot signal PID {pid}: {exc}") from exc

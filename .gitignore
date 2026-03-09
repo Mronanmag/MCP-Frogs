@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# SQLite databases (runtime artifacts — do not commit)
+*.db
+*.sqlite
+*.sqlite3
+
+# Job workspaces (auto-created at runtime)
+workspaces/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Claude Code session artifacts
+.claude/settings.local.json

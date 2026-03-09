@@ -1,7 +1,10 @@
-FROM node:20-bookworm-slim
+# syntax=docker/dockerfile:1.7
+# Claude Code CLI container — kept minimal; API key injected at runtime.
+FROM node:22-bookworm-slim
 
 WORKDIR /workspace
 
+# Runtime utilities (git required for Claude Code's git workflows).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     ca-certificates \
@@ -9,7 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Claude Code CLI (requires ANTHROPIC_API_KEY at runtime).
-RUN npm install -g @anthropic-ai/claude-code
+# Pin to a specific Claude Code version so the image is reproducible.
+# Update CLAUDE_CODE_VERSION to upgrade (check: npm show @anthropic-ai/claude-code version).
+ARG CLAUDE_CODE_VERSION=2.1.63
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+    && claude --version
 
 CMD ["bash"]

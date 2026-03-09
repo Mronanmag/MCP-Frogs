@@ -1,5 +1,5 @@
 """
-FROGS MCP Server — exposes 13 tools via FastMCP (stdio transport).
+FROGS MCP Server — exposes 14 tools via FastMCP (stdio transport).
 
 Usage:
     python server.py
@@ -8,6 +8,7 @@ Or via MCP inspector:
     python -m mcp dev server.py
 """
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -15,6 +16,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 from config import WORKSPACE_ROOT
+from config import validate_config
 from database import (
     init_db,
     create_project as db_create_project,
@@ -35,7 +37,8 @@ from tools_registry import (
     TOOLS, PIPELINE_ORDER, OPTIONAL_STEPS, list_tool_names,
 )
 
-# Initialize DB on startup
+# Initialize DB and validate config on startup
+validate_config()
 init_db()
 
 mcp = FastMCP("frogs", instructions="FROGS amplicon metagenomics pipeline manager")
@@ -56,21 +59,34 @@ def _all_steps_ordered() -> list[dict]:
 
 
 def _elapsed(start_time: Optional[str], end_time: Optional[str] = None) -> Optional[float]:
+    """Return elapsed seconds between two ISO timestamps (or since now).
+
+    Handles timestamps with or without timezone suffix (+00:00 / Z) as stored
+    by database.py (datetime.now(tz=timezone.utc).isoformat()).
+    """
     if not start_time:
         return None
-    fmt = "%Y-%m-%dT%H:%M:%S.%f"
-    fmt_short = "%Y-%m-%dT%H:%M:%S"
-    def _parse(s):
-        for f in (fmt, fmt_short):
+
+    def _parse(s: str) -> Optional[datetime]:
+        # Strip timezone suffix before parsing to avoid strptime incompatibilities.
+        # All DB timestamps are UTC so we can safely discard the offset.
+        s_clean = s.replace("+00:00", "").replace("Z", "")
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
             try:
-                return datetime.strptime(s, f)
+                return datetime.strptime(s_clean, fmt)
             except ValueError:
                 continue
         return None
+
     t0 = _parse(start_time)
     if t0 is None:
         return None
-    t1 = _parse(end_time) if end_time else datetime.utcnow()
+    if end_time:
+        t1 = _parse(end_time)
+        if t1 is None:
+            return None
+    else:
+        t1 = datetime.now(tz=timezone.utc).replace(tzinfo=None)
     return (t1 - t0).total_seconds()
 
 
@@ -112,7 +128,7 @@ def submit_job(
         {"job_id": str, "status": "running", "working_dir": str}
     """
     job_id = _submit_job(tool_name, params, project_id=project_id)
-    job = get_job(job_id)
+    job = get_job(job_id) or {}
     return {
         "job_id": job_id,
         "status": "running",
@@ -165,7 +181,7 @@ def get_job_results(job_id: str) -> dict:
     if not job:
         return {"error": f"Job '{job_id}' not found."}
 
-    log_path = job.get("log_file") or job.get("stderr_file")
+    log_path = job.get("log_file") or job.get("stderr_file") or ""
     log_tail = _read_tail(log_path, 50)
 
     return {
@@ -263,7 +279,7 @@ def create_project(
         name=name,
         description=description,
         working_dir=working_dir,
-    )
+    ) or {}
 
     # Initialize all pipeline steps
     steps = _all_steps_ordered()
@@ -331,7 +347,7 @@ def submit_pipeline_step(
         step_name=step_name,
     )
 
-    job = get_job(job_id)
+    job = get_job(job_id) or {}
     return {
         "job_id": job_id,
         "step_name": step_name,
@@ -553,7 +569,6 @@ def read_report(job_id: str) -> str:
                 with open(path, "r", errors="replace") as f:
                     content = f.read()
                 # Strip HTML tags (simple approach)
-                import re
                 text = re.sub(r"<script[^>]*>.*?</script>", "", content, flags=re.DOTALL)
                 text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
                 text = re.sub(r"<[^>]+>", " ", text)

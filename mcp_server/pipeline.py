@@ -160,12 +160,43 @@ def resolve_inputs_for_step(project_id: str, step_name: str) -> dict:
     return resolved
 
 
-def get_pipeline_status_summary(project_id: str) -> dict:
+def _reconcile_step_status(steps: list[dict]) -> list[dict]:
+    """
+    Reconcile pipeline_steps.status with the actual job status.
+
+    When a job was submitted via submit_job() (not submit_pipeline_step()),
+    the JobPoller never calls update_pipeline_step() so pipeline_steps.status
+    stays 'pending' even after the job completes.  This function fixes that
+    by reading the job_status column from the LEFT JOIN.
+    """
+    for step in steps:
+        job_status = step.get("job_status")
+        step_status = step.get("status", "pending")
+        if step_status == "pending" and job_status and job_status != "running":
+            step["status"] = job_status
+    return steps
+
+
+
     """
     Return a structured summary of all pipeline steps for a project.
+
+    The effective status of a step is derived from the associated job's status
+    (via the LEFT JOIN in get_pipeline_steps) when the pipeline_steps.status
+    is still 'pending' but a job_id is already linked.  This handles the case
+    where submit_job() was called without step_name so update_pipeline_step()
+    was never invoked by the JobPoller.
     """
     steps = get_pipeline_steps(project_id)
     step_by_name = {s["step_name"]: s for s in steps}
+
+    # Reconcile step status with actual job status for each step.
+    for step in steps:
+        job_status = step.get("job_status")
+        step_status = step.get("status", "pending")
+        # If the step still shows 'pending' but we have a job result, use the job status.
+        if step_status == "pending" and job_status and job_status != "running":
+            step["status"] = job_status
 
     summary = {
         "project_id": project_id,
@@ -178,7 +209,6 @@ def get_pipeline_status_summary(project_id: str) -> dict:
     }
 
     # Determine next recommended step
-    all_steps = PIPELINE_ORDER + OPTIONAL_STEPS
     for step_name in PIPELINE_ORDER:
         info = step_by_name.get(step_name, {})
         status = info.get("status", "unknown")
@@ -206,6 +236,8 @@ def get_pipeline_recommendations(project_id: str) -> str:
             "No pipeline steps initialized. Use `create_project()` to set up the pipeline.\n"
         )
 
+    # Reconcile pipeline_steps.status with actual job status
+    steps = _reconcile_step_status(steps)
     step_by_name = {s["step_name"]: s for s in steps}
 
     lines = [f"## Pipeline Status: {project['name']}\n"]
