@@ -221,48 +221,62 @@ PYTHONPATH=. python server.py
 
 ## Déploiement Docker (rapide)
 
-Le dépôt inclut une structure Docker prête à l'emploi avec deux options :
+Le dépôt inclut deux modes Docker :
 
-1. **Mode recommandé (2 conteneurs)** :
-   - `mcp-server` : héberge MCP + env `frogs=5.1.0` via **micromamba** (avec contrainte Python 3.7 imposée par FROGS 5.1.0).
-   - `claude-code` : CLI Claude isolée, connectée au MCP via transport HTTP.
-2. **Mode fallback (1 conteneur)** : profil `fallback`, utile si votre version de Claude Code n'accepte pas le transport MCP distant.
+1. **Mode tout-en-un (recommandé)** : un seul conteneur contenant Claude Code, le serveur MCP et les deux environnements FROGS.
+2. **Mode deux conteneurs** (`--profile multi`) : conteneurs séparés pour le serveur MCP et Claude Code, utile si vous souhaitez redémarrer le serveur MCP indépendamment.
 
-### Fichiers ajoutés
+### Fichiers Docker
 
-- `docker/Dockerfile.mcp` : construit deux environnements micromamba (`frogs` et `mcp_frogs`).
-  - `frogs` est créé avec `python=3.7` (compatibilité stricte de `frogs=5.1.0`).
-- `docker/Dockerfile.claude` : conteneur isolé pour Claude Code.
-- `docker-compose.yml` : orchestration complète.
-- `docker/claude/.mcp.json` : config MCP côté Claude (URL interne compose).
-- `mcp_server/http_entrypoint.py` : expose le serveur en `sse` sur le port `8000`.
+| Fichier | Description |
+|---|---|
+| `docker/Dockerfile.all-in-one` | Image tout-en-un : micromamba + Node.js + Claude Code + envs `frogs` et `mcp_frogs` |
+| `docker/Dockerfile.mcp` | Image MCP seule (mode 2 conteneurs) |
+| `docker/Dockerfile.claude` | Image Claude Code seule (mode 2 conteneurs) |
+| `docker/entrypoint.sh` | Script de démarrage : lance le serveur MCP en fond puis exec `claude` |
+| `docker/all-in-one/.mcp.json` | Config MCP pour le mode tout-en-un (`http://localhost:8000/mcp`) |
+| `docker/claude/.mcp.json` | Config MCP pour le mode 2 conteneurs (`http://mcp-server:8000/mcp`) |
 
-### Lancer le setup 2 conteneurs
-
-```bash
-docker compose build
-docker compose up -d mcp-server
-docker compose run --rm claude-code claude
-```
-
-> Pensez à définir `ANTHROPIC_API_KEY` dans votre shell avant de lancer `claude-code`.
->
-> Le service `claude-code` monte `docker/claude/.mcp.json` **sur le `.mcp.json` du projet** dans le conteneur, pour forcer la connexion HTTP vers `mcp-server` (et éviter le mode stdio local).
-
-### Lancer le mode fallback (tout dans un seul conteneur)
+### Mode tout-en-un (recommandé)
 
 ```bash
-docker compose --profile fallback run --rm all-in-one
+# Prérequis : ANTHROPIC_API_KEY dans l'environnement
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Construire l'image
+make build
+# ou : docker compose build all-in-one
+
+# Lancer Claude Code (MCP server démarre automatiquement en fond)
+make run
+# ou : docker compose run --rm all-in-one claude
+
+# Ouvrir un shell de debug (MCP server également actif)
+make shell
+# ou : docker compose run --rm all-in-one bash
 ```
 
-Dans ce shell, vous pouvez démarrer MCP et Claude localement dans le même conteneur.
+> Le script `docker/entrypoint.sh` démarre automatiquement le serveur MCP sur `http://localhost:8000`
+> avant de lancer Claude Code. Le fichier `docker/all-in-one/.mcp.json` est monté sur `/app/.mcp.json`
+> pour que Claude Code se connecte au serveur local.
+
+### Mode deux conteneurs (alternatif)
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+
+make multi-build
+make multi-up    # démarre mcp-server en arrière-plan
+make multi-run   # lance claude-code connecté au mcp-server
+```
 
 ### Notes pratiques
 
 - Le volume `./workspaces` est monté pour conserver les sorties des jobs.
-- La base SQLite `mcp_server/frogs_jobs.db` est persistée via volume.
-- Le serveur MCP est exposé sur `http://localhost:8000` (endpoint MCP: `/sse`).
-- Variables de contrôle HTTP: `MCP_HOST`, `MCP_PORT`, `MCP_DISABLE_DNS_REBINDING_PROTECTION`.
+- La base SQLite `mcp_server/frogs_jobs.db` est persistée via volume nommé `mcp-db`.
+- En mode tout-en-un, le serveur MCP écoute sur `127.0.0.1:8000` (local uniquement).
+- En mode 2 conteneurs, le serveur MCP est exposé sur `http://localhost:8000` depuis l'hôte.
+- Variables de contrôle HTTP : `MCP_HOST`, `MCP_PORT`, `MCP_DISABLE_DNS_REBINDING_PROTECTION`.
 
 ---
 

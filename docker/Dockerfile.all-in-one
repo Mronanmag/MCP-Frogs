@@ -1,0 +1,109 @@
+# syntax=docker/dockerfile:1.7
+# All-in-one container: Claude Code CLI + MCP server + two FROGS conda environments.
+#
+# Environments embedded in the image:
+#   frogs      — Python 3.7 + FROGS 5.x (bioconda, strict bioinformatics deps)
+#   mcp_frogs  — Python 3.11 + MCP SDK + pydantic (HTTP/SSE server runtime)
+#
+# Startup flow (see docker/entrypoint.sh):
+#   1. MCP server starts in the background (mcp_frogs env, port 8000)
+#   2. Claude Code CLI (or bash) is exec'd in the foreground
+#
+# The bundled .mcp.json (docker/all-in-one/.mcp.json) points to
+#   http://localhost:8000/mcp so Claude Code connects to the local MCP server.
+#
+# Upgrade notes:
+#   - FROGS       : change FROGS_VERSION ARG (check bioconda.github.io/recipes/frogs)
+#   - MCP SDK     : change MCP_VERSION ARG  (check: pip index versions mcp)
+#   - Claude Code : change CLAUDE_CODE_VERSION ARG (check: npm show @anthropic-ai/claude-code version)
+#   - Node.js     : change NODE_VERSION ARG (LTS; check nodesource.com)
+#   - micromamba  : change FROM tag         (check hub.docker.com/r/mambaorg/micromamba)
+
+FROM mambaorg/micromamba:2.0.8
+
+USER root
+WORKDIR /app
+
+# ── Build-time version pins ───────────────────────────────────────────────────
+ARG FROGS_VERSION=5.1.0
+ARG MCP_VERSION=1.9.4
+ARG PYDANTIC_VERSION=2.11.4
+ARG CLAUDE_CODE_VERSION=2.1.63
+ARG NODE_VERSION=22
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Runtime utilities:
+#   tini    — proper PID-1 signal forwarding for subprocesses
+#   procps  — ps/kill for debugging stuck FROGS jobs
+#   git     — required by Claude Code's git workflows
+#   curl    — Docker HEALTHCHECK + waiting for MCP server startup
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        git \
+        procps \
+        tini \
+    && curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code globally so it is available to all users (including $MAMBA_USER).
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+    && claude --version
+
+# Startup entrypoint: starts MCP server then launches the CMD (claude or bash).
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# ── Conda environment setup (runs as $MAMBA_USER) ────────────────────────────
+COPY --chown=$MAMBA_USER:$MAMBA_USER mcp_server/requirements.txt /tmp/requirements.txt
+COPY --chown=$MAMBA_USER:$MAMBA_USER docker/parse_frogs_reqs.py /tmp/parse_frogs_reqs.py
+
+USER $MAMBA_USER
+SHELL ["/bin/bash", "-lc"]
+
+# Env 1 — FROGS runtime (strictly pinned to bioconda release).
+# Two-pass install (same strategy as Dockerfile.mcp):
+#   Pass 1: install frogs package → deposits frogs-conda-requirements.yaml
+#   Pass 2: parse and install bioinformatics tool packages only
+#           (R/Bioconductor and blast excluded due to python=3.7 / openssl=1.0.2 conflicts)
+RUN micromamba create -y -n frogs \
+        -c bioconda -c conda-forge \
+        frogs=${FROGS_VERSION} python=3.7 \
+    && FROGS_REQS=$(find /opt/conda/envs/frogs/share -name "frogs-conda-requirements.yaml" | head -1) \
+    && echo "Installing FROGS runtime deps from: ${FROGS_REQS}" \
+    && TOOLS=$(/opt/conda/envs/frogs/bin/python /tmp/parse_frogs_reqs.py "${FROGS_REQS}") \
+    && echo "Tools: ${TOOLS}" \
+    && micromamba install -y -n frogs -c bioconda -c conda-forge ${TOOLS} \
+    && micromamba clean --all --yes
+
+# Env 2 — MCP server runtime (Python 3.11 + MCP SDK).
+RUN micromamba create -y -n mcp_frogs -c conda-forge python=3.11 pip \
+    && micromamba run -n mcp_frogs pip install --no-cache-dir \
+        "mcp[cli]==${MCP_VERSION}" \
+        "pydantic==${PYDANTIC_VERSION}" \
+    && micromamba clean --all --yes
+
+COPY --chown=$MAMBA_USER:$MAMBA_USER . /app
+
+# ── Runtime environment ───────────────────────────────────────────────────────
+ENV PYTHONPATH=/app/mcp_server
+ENV FROGS_PYTHON=/opt/conda/envs/frogs/bin/python
+# MCP server listens on localhost only — Claude Code connects via http://localhost:8000/mcp
+ENV MCP_HOST=127.0.0.1
+ENV MCP_PORT=8000
+ENV MCP_DISABLE_DNS_REBINDING_PROTECTION=1
+
+# Health-check on the MCP server's /health route.
+# start_period is longer here because the MCP server only starts when the
+# entrypoint runs (not at image build time).
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
+    CMD curl -fs http://localhost:8000/health || exit 1
+
+EXPOSE 8000
+
+# tini (PID 1) → entrypoint.sh → [mcp server in background] + exec CMD
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+# Default: launch Claude Code; override with 'bash' for a debug shell.
+CMD ["claude"]

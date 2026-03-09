@@ -44,14 +44,17 @@
 
 ```
 MCP-Frogs/
-├── .mcp.json                    # Config MCP — ATTENTION: pointe vers URL Docker interne
+├── .mcp.json                    # Config MCP pour mode local (stdio)
 ├── docker/
-│   ├── Dockerfile.mcp           # Image MCP+FROGS (deux envs micromamba)
-│   ├── Dockerfile.claude        # Image Claude Code CLI
+│   ├── Dockerfile.all-in-one    # IMAGE PRINCIPALE — Claude Code + MCP + deux envs FROGS
+│   ├── Dockerfile.mcp           # Image MCP seule (mode 2 conteneurs)
+│   ├── Dockerfile.claude        # Image Claude Code seule (mode 2 conteneurs)
+│   ├── entrypoint.sh            # Startup: lance MCP en fond puis exec claude
 │   ├── parse_frogs_reqs.py      # Helper: filtre les dépendances conda FROGS
-│   └── claude/.mcp.json         # Config MCP côté conteneur Claude
-├── docker-compose.yml           # Orchestration: mcp-server + claude-code
-├── Makefile                     # Cibles pratiques: up/down/build/logs/health/clean
+│   ├── all-in-one/.mcp.json     # Config MCP tout-en-un (localhost:8000)
+│   └── claude/.mcp.json         # Config MCP 2 conteneurs (mcp-server:8000)
+├── docker-compose.yml           # Orchestration: all-in-one (défaut) + multi (profil)
+├── Makefile                     # Cibles: build/run/shell/health + multi-*
 ├── scripts/
 │   └── run_mcp_server.sh        # Wrapper shell pour mode local (stdio)
 ├── mcp_server/
@@ -89,17 +92,21 @@ http_entrypoint.py
 
 ## 4. Comment lancer le projet
 
-### Mode Docker (recommandé)
+### Mode Docker tout-en-un (recommandé)
 
 ```bash
 # Prérequis: ANTHROPIC_API_KEY dans l'environnement shell
 export ANTHROPIC_API_KEY=sk-ant-...
 
-make build        # Construit les deux images Docker
-make up           # Lance mcp-server en arrière-plan
-make health       # Vérifie que le serveur répond sur /health
-docker compose run --rm claude-code claude  # Lance Claude connecté au MCP
+make build    # Construit l'image all-in-one (Claude Code + MCP server + FROGS)
+make run      # Lance MCP en fond puis ouvre Claude Code (interactif)
+# ou pour un shell de debug:
+make shell    # Lance MCP en fond puis ouvre bash
 ```
+
+> Le serveur MCP démarre automatiquement sur `http://localhost:8000` dans le conteneur.
+> Le fichier `docker/all-in-one/.mcp.json` est monté sur `/app/.mcp.json` pour connecter
+> Claude Code au serveur local.
 
 ### Mode local (développement)
 
