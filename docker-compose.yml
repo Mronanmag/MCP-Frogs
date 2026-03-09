@@ -1,11 +1,59 @@
 services:
-  # ─── MCP Server (FROGS backend) ────────────────────────────────────────────
+  # ─── All-in-one (default) ──────────────────────────────────────────────────
+  # Single container: Claude Code CLI + MCP server + both FROGS conda envs.
+  #
+  # Usage:
+  #   docker compose run --rm all-in-one          # start MCP + launch claude
+  #   docker compose run --rm all-in-one bash     # start MCP + debug shell
+  #
+  # The .mcp.json override below points Claude Code to http://localhost:8000/mcp
+  # (MCP server runs inside the same container on 127.0.0.1).
+  all-in-one:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.all-in-one
+      # Override on the CLI:  docker compose build --build-arg FROGS_VERSION=5.2.0
+      args:
+        FROGS_VERSION: "5.1.0"
+        MCP_VERSION: "1.9.4"
+        PYDANTIC_VERSION: "2.11.4"
+        CLAUDE_CODE_VERSION: "2.1.63"
+        NODE_VERSION: "22"
+    container_name: mcp-frogs
+    working_dir: /app
+    volumes:
+      - ./workspaces:/app/workspaces
+      # Persist the SQLite job database across container restarts.
+      - mcp-db:/app/mcp_server
+      # Use localhost URL: MCP server and Claude Code share the same container.
+      - ./docker/all-in-one/.mcp.json:/app/.mcp.json:ro
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      FROGS_PYTHON: /opt/conda/envs/frogs/bin/python
+      FROGS_DIR: /opt/conda/envs/frogs/share/FROGS-5.1.0
+      FROGS_TOOLS_DIR: /opt/conda/envs/frogs/share/FROGS-5.1.0/tools
+      FROGS_LIB_DIR: /opt/conda/envs/frogs/share/FROGS-5.1.0/lib
+      FROGS_BIN_DIR: /opt/conda/envs/frogs/share/FROGS-5.1.0/libexec
+      PYTHONPATH: /app/mcp_server
+      MCP_HOST: 127.0.0.1
+      MCP_PORT: "8000"
+      MCP_DISABLE_DNS_REBINDING_PROTECTION: "1"
+    stdin_open: true
+    tty: true
+
+  # ─── Two-container setup (alternative) ─────────────────────────────────────
+  # Separate containers for the MCP server and Claude Code CLI.
+  # Useful when you want to restart the MCP server independently, or when
+  # running Claude Code on the host and pointing it at the containerised server.
+  #
+  # Usage:
+  #   docker compose --profile multi up -d mcp-server
+  #   docker compose --profile multi run --rm claude-code claude
   mcp-server:
+    profiles: ["multi"]
     build:
       context: .
       dockerfile: docker/Dockerfile.mcp
-      # Pass version ARGs to keep the image reproducible.
-      # Override on the CLI:  docker compose build --build-arg MCP_VERSION=1.9.4
       args:
         FROGS_VERSION: "5.1.0"
         MCP_VERSION: "1.9.4"
@@ -36,13 +84,12 @@ services:
       start_period: 40s
       retries: 3
 
-  # ─── Claude Code CLI ────────────────────────────────────────────────────────
   claude-code:
+    profiles: ["multi"]
     build:
       context: .
       dockerfile: docker/Dockerfile.claude
       args:
-        # Pin Claude Code to the same version as in Dockerfile.claude ARG default.
         CLAUDE_CODE_VERSION: "2.1.63"
     container_name: claude-code
     restart: unless-stopped
@@ -58,27 +105,6 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     stdin_open: true
     tty: true
-
-  # ─── All-in-one fallback ────────────────────────────────────────────────────
-  # Use when your Claude Code setup cannot consume a remote MCP transport:
-  #   docker compose --profile fallback up all-in-one
-  all-in-one:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.mcp
-    profiles: ["fallback"]
-    container_name: mcp-frogs-all-in-one
-    working_dir: /app
-    volumes:
-      - ./:/app
-    command:
-      - bash
-      - -lc
-      - |
-        echo "[all-in-one] Starting MCP server in background..."
-        micromamba run -n mcp_frogs python /app/mcp_server/http_entrypoint.py &
-        echo "[all-in-one] MCP server started. Dropping into bash."
-        bash
 
 # ─── Named volumes ─────────────────────────────────────────────────────────
 volumes:
